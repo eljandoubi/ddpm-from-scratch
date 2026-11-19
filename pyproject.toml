@@ -1,7 +1,7 @@
 [project]
-name = "diffusion"
+name = "ddpm-from-scratch"
 version = "0.1.0"
-description = "Add your description here"
+description = "Denoising diffusion probabilistic models from scratch in PyTorch: UNet, DDPM and DDIM samplers, training loop and FID evaluation"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -13,3 +13,17 @@ dependencies = [
     "torchvision>=0.25.0",
     "transformers>=5.0.0",
 ]
+
+[project.optional-dependencies]
+eval = ["torch-fidelity>=0.3.0"]
+hf = ["datasets>=3.0.0"]
+
+[dependency-groups]
+dev = ["pytest>=8.0.0", "ruff>=0.8.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
