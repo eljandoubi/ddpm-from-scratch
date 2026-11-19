@@ -1,0 +1,12 @@
+{
+  "fid": 83.84306070711546,
+  "num_images": 5000,
+  "method": "ddim",
+  "steps": 10,
+  "eta": 0.0,
+  "checkpoint": "work/celeba64/checkpoint_16000",
+  "img_size": 64,
+  "parameters": 27184323,
+  "sampling_seconds": 124.5,
+  "device": "Tesla T4"
+}
