@@ -471,6 +471,16 @@ class Diffusion(nn.Module):
         return noise_pred
 
 
+def build_model(starting_channels: int) -> Diffusion:
+    return Diffusion(
+        in_channels=3,
+        start_dim=starting_channels,
+        dim_mults=(1, 2, 3, 4),
+        residual_blocks_per_group=2,
+        time_embed_dim=starting_channels * 2,
+    )
+
+
 if __name__ == "__main__":
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = Diffusion().to(device)
