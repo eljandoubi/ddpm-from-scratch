@@ -59,7 +59,11 @@ class Sampler:
         return noisy_image, noise
 
     def remove_noise(
-        self, input: torch.Tensor, timestep: torch.Tensor, predicted_noise: torch.Tensor
+        self,
+        input: torch.Tensor,
+        timestep: torch.Tensor,
+        predicted_noise: torch.Tensor,
+        clip_x0: bool = False,
     ):
         assert input.shape == predicted_noise.shape, (
             "Shapes of noise pattern and input image must be identical!!"
@@ -94,6 +98,38 @@ class Sampler:
         reciprocal_root_a_t = self.alpha[timestep] ** -0.5
         reciprocal_root_a_t = self._repeated_unsqueeze(input, reciprocal_root_a_t)
 
+        if clip_x0:
+            ### Posterior mean computed from the clean image estimate, clipped to the image range ###
+            root_alpha_cumulative_t = self._repeated_unsqueeze(
+                input, alpha_cumulative_t**0.5
+            )
+            x0_estimate = (
+                input
+                - self._repeated_unsqueeze(input, root_one_minus_cumulative_alpha_t)
+                * predicted_noise
+            ) / root_alpha_cumulative_t
+            x0_estimate = x0_estimate.clamp(-1, 1)
+
+            ### At timestep 0 the previous cumulative product is 1 (the clean image) ###
+            previous = torch.where(
+                timestep >= 1,
+                alpha_cumulative_prod_t_prev,
+                torch.ones_like(alpha_cumulative_prod_t_prev),
+            )
+            x0_coefficient = previous**0.5 * beta_t / (1 - alpha_cumulative_t)
+            ### 1 - cumulative_a loses digits in float32 at timestep 0, where the coefficient is exactly 1 ###
+            x0_coefficient = torch.where(
+                timestep >= 1, x0_coefficient, torch.ones_like(x0_coefficient)
+            )
+            input_coefficient = (
+                self.alpha[timestep] ** 0.5 * (1 - previous) / (1 - alpha_cumulative_t)
+            )
+            mean = (
+                self._repeated_unsqueeze(input, x0_coefficient) * x0_estimate
+                + self._repeated_unsqueeze(input, input_coefficient) * input
+            )
+            return mean + sigma_z
+
         ### Compute Denoised Image ###
         denoised = (
             reciprocal_root_a_t * (input - (noise_coefficient * predicted_noise))
@@ -101,6 +137,47 @@ class Sampler:
         )
 
         return denoised
+
+    def ddim_step(
+        self,
+        input: torch.Tensor,
+        timestep: int,
+        prev_timestep: int,
+        predicted_noise: torch.Tensor,
+        eta: float = 0.0,
+        clip_x0: bool = True,
+    ):
+        ### One DDIM update from timestep to prev_timestep (-1 means the clean image) ###
+        alpha_cumulative_t = self.alpha_cumulative_prod[timestep]
+        if prev_timestep >= 0:
+            alpha_cumulative_prev = self.alpha_cumulative_prod[prev_timestep]
+        else:
+            alpha_cumulative_prev = torch.ones_like(alpha_cumulative_t)
+
+        ### Estimate x_0 from the predicted noise ###
+        x0_estimate = (
+            input - (1 - alpha_cumulative_t) ** 0.5 * predicted_noise
+        ) / alpha_cumulative_t**0.5
+        if clip_x0:
+            ### Clip it to the image range, then recompute the noise so that the pair
+            ### (x_0, noise) still reproduces the current image ###
+            x0_estimate = x0_estimate.clamp(-1, 1)
+            predicted_noise = (input - alpha_cumulative_t**0.5 * x0_estimate) / (
+                1 - alpha_cumulative_t
+            ) ** 0.5
+
+        ### eta = 0 is deterministic, eta = 1 matches the DDPM variance ###
+        sigma = (
+            eta
+            * ((1 - alpha_cumulative_prev) / (1 - alpha_cumulative_t)) ** 0.5
+            * (1 - alpha_cumulative_t / alpha_cumulative_prev) ** 0.5
+        )
+        direction = (1 - alpha_cumulative_prev - sigma**2) ** 0.5 * predicted_noise
+        return (
+            alpha_cumulative_prev**0.5 * x0_estimate
+            + direction
+            + sigma * torch.randn_like(input)
+        )
 
 
 if __name__ == "__main__":
