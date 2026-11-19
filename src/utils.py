@@ -1,12 +1,91 @@
 import os
+import argparse
 import itertools
+from pathlib import Path
 import torch
 import torch.nn as nn
 import numpy as np
+from PIL import Image
 from torch.nn import Module
 import matplotlib.pyplot as plt
+from torch.utils.data import Dataset
 from torchvision import transforms
+from torchvision.datasets import CelebA
 from sampler import Sampler
+
+
+class FolderDataset(Dataset):
+    """Every image below a folder, yielding (image, 0) like CelebA does."""
+
+    def __init__(self, folder: str, transform):
+        suffixes = {".png", ".jpg", ".jpeg"}
+        self.paths = sorted(
+            p for p in Path(folder).rglob("*") if p.suffix.lower() in suffixes
+        )
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, idx: int):
+        return self.transform(Image.open(self.paths[idx]).convert("RGB")), 0
+
+
+class HFImageDataset(Dataset):
+    """A Hugging Face image dataset that yields (image, 0), like CelebA does."""
+
+    def __init__(self, name: str, transform):
+        from datasets import load_dataset
+
+        self.data = load_dataset(name, split="train")
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx: int):
+        return self.transform(self.data[idx]["image"].convert("RGB")), 0
+
+
+def image_transform(img_size: int):
+    return transforms.Compose(
+        [
+            transforms.CenterCrop(178),
+            transforms.Resize((img_size, img_size)),
+            transforms.ToTensor(),
+            transforms.Lambda(lambda t: (t * 2) - 1),
+        ]
+    )
+
+
+def add_data_arguments(parser: argparse.ArgumentParser) -> None:
+    """Flags that say where the training images come from."""
+    parser.add_argument(
+        "--path_to_data", help="Path to CelebA Dataset", default="data", type=str
+    )
+    parser.add_argument(
+        "--hf_dataset",
+        help="Hugging Face image dataset to use instead of torchvision CelebA, e.g. nielsr/CelebA-faces",
+        default=None,
+        type=str,
+    )
+    parser.add_argument(
+        "--image_folder",
+        help="Folder of images to use instead of CelebA",
+        default=None,
+        type=str,
+    )
+
+
+def load_celeba(args: argparse.Namespace, transform):
+    if args.image_folder is not None:
+        return FolderDataset(args.image_folder, transform)
+    ### torchvision downloads CelebA from Google Drive, which often hits its quota ###
+    if args.hf_dataset is not None:
+        return HFImageDataset(args.hf_dataset, transform)
+    return CelebA(
+        args.path_to_data, download=True, transform=transform, target_type="identity"
+    )
 
 
 @torch.no_grad()

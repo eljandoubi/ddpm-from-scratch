@@ -3,17 +3,15 @@ import shutil
 import argparse
 import torch
 from accelerate import Accelerator
-from torchvision import transforms
-from torchvision.datasets import CelebA
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
-from model import Diffusion
+from model import build_model
 from sampler import Sampler
-from utils import sample_plot_image
+from utils import add_data_arguments, image_transform, load_celeba, sample_plot_image
 
 
 def trainer(args: argparse.Namespace):
@@ -22,26 +20,18 @@ def trainer(args: argparse.Namespace):
     accelerator = Accelerator(
         project_dir=path_to_experiment,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        mixed_precision=args.mixed_precision,
         log_with="tensorboard",
     )
     accelerator.init_trackers(args.experiment_name)
     tracker = accelerator.get_tracker("tensorboard")
+    if accelerator.is_main_process:
+        os.makedirs(args.generated_directory, exist_ok=True)
 
     ### PREP DATALOADER ###
-    image2tensor = transforms.Compose(
-        [
-            transforms.Resize((args.img_size, args.img_size)),
-            transforms.ToTensor(),
-            transforms.Lambda(lambda t: (t * 2) - 1),
-        ]
-    )
+    image2tensor = image_transform(args.img_size)
     mini_batch_size = args.batch_size // args.gradient_accumulation_steps
-    dataset = CelebA(
-        args.path_to_data,
-        download=True,
-        transform=image2tensor,
-        target_type="identity",
-    )
+    dataset = load_celeba(args, image2tensor)
     trainloader = DataLoader(
         dataset,
         batch_size=mini_batch_size,
@@ -51,13 +41,7 @@ def trainer(args: argparse.Namespace):
     )
 
     ### DEFINE MODEL ###
-    model = Diffusion(
-        in_channels=3,
-        start_dim=args.starting_channels,
-        dim_mults=(1, 2, 3, 4),
-        residual_blocks_per_group=2,
-        time_embed_dim=args.starting_channels * 2,
-    )
+    model = build_model(args.starting_channels)
 
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
@@ -201,10 +185,13 @@ def trainer(args: argparse.Namespace):
 
                     ### Delete Old Checkpoints ###
                     if accelerator.is_main_process:
-                        all_checkpoints = os.listdir(path_to_experiment)
                         all_checkpoints = sorted(
-                            all_checkpoints,
-                            key=lambda x: int(x.split(".")[0].split("_")[-1]),
+                            (
+                                c
+                                for c in os.listdir(path_to_experiment)
+                                if c.startswith("checkpoint_")
+                            ),
+                            key=lambda x: int(x.split("_")[-1]),
                         )
 
                         if len(all_checkpoints) > args.num_keep_checkpoints:
@@ -243,14 +230,18 @@ def trainer(args: argparse.Namespace):
     accelerator.end_training()
 
 
-if __name__ == "__main__":
-    #### DEFINE ARGUMENT PARSER ###
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Arguments for Denoising Diffusion")
     parser.add_argument(
         "--experiment_name", help="Name of Training Run", required=True, type=str
     )
+    add_data_arguments(parser)
     parser.add_argument(
-        "--path_to_data", help="Path to CelebA Dataset", default="data", type=str
+        "--mixed_precision",
+        help="Mixed precision mode (a T4 supports fp16 but not bf16)",
+        choices=("no", "fp16", "bf16"),
+        default="no",
+        type=str,
     )
     parser.add_argument(
         "--working_directory",
@@ -372,5 +363,8 @@ if __name__ == "__main__":
         default=None,
         type=str,
     )
-    args = parser.parse_args()
-    trainer(args)
+    return parser.parse_args(argv)
+
+
+if __name__ == "__main__":
+    trainer(parse_args())
